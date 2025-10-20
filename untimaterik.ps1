@@ -5,15 +5,15 @@
 .DESCRIPTION
     This script performs a sequence of actions for maximum prank effect:
     1. Sets the monitor brightness to 100% using WMI.
-    2. Sets the system master audio volume to 100% using the Windows Core Audio API.
+    2. Checks, sets, and verifies the system master audio volume is 100% using the Windows Core Audio API.
     3. Opens the Rickroll YouTube video in the default web browser.
     4. Waits a few seconds for the browser to load and become the active window.
     5. Sends the F11 key to make the browser enter full-screen mode.
 
 .NOTES
     - The brightness control uses WMI and should work on most modern systems (especially laptops).
-    - The volume control now uses a much more reliable method by directly accessing the system's
-      audio endpoint via an embedded C# class. This avoids unreliable keystroke simulation.
+    - The volume control uses a highly reliable method by directly accessing the system's
+      audio endpoint via an embedded C# class. It now includes diagnostics to verify success.
     - Run this from a PowerShell terminal.
 #>
 
@@ -28,9 +28,9 @@ catch {
 }
 
 
-# --- Step 2: Set System Volume to 100% (Most Reliable Method) ---
+# --- Step 2: Set and Verify System Volume to 100% (Most Reliable Method) ---
 # This block embeds C# code to directly control the master volume via the Core Audio API.
-# This is far more reliable than sending keystrokes.
+# This is far more reliable than sending keystrokes and now includes verification.
 try {
     $cSharpCode = @"
     using System.Runtime.InteropServices;
@@ -58,12 +58,22 @@ try {
     }
 
     public class VolumeControl {
-        public static void SetMasterVolume(float volumeLevel) {
+        private static IAudioEndpointVolume GetEndpoint() {
             IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
             enumerator.GetDefaultAudioEndpoint(0, 1, out IMMDevice dev);
             dev.Activate(typeof(IAudioEndpointVolume).GUID, 0, System.IntPtr.Zero, out object epvObj);
-            IAudioEndpointVolume epv = (IAudioEndpointVolume)epvObj;
+            return (IAudioEndpointVolume)epvObj;
+        }
+
+        public static void SetMasterVolume(float volumeLevel) {
+            IAudioEndpointVolume epv = GetEndpoint();
             epv.SetMasterVolumeLevelScalar(volumeLevel, System.Guid.Empty);
+        }
+
+        public static float GetMasterVolume() {
+            IAudioEndpointVolume epv = GetEndpoint();
+            epv.GetMasterVolumeLevelScalar(out float level);
+            return level;
         }
     }
 
@@ -73,12 +83,28 @@ try {
 "@
     
     Add-Type -TypeDefinition $cSharpCode
-    Write-Host "Setting volume to maximum..." -ForegroundColor Green
-    # The volume level is a float from 0.0 (0%) to 1.0 (100%).
+    
+    # --- Volume Diagnostics ---
+    $currentVolume = [VolumeControl]::GetMasterVolume()
+    Write-Host "Current volume is: $([math]::Round($currentVolume * 100))%"
+    
+    Write-Host "Setting volume to maximum..."
     [VolumeControl]::SetMasterVolume(1.0)
+    
+    # Give the system a moment to process the change
+    Start-Sleep -Milliseconds 250
+    
+    $newVolume = [VolumeControl]::GetMasterVolume()
+    Write-Host "New volume is: $([math]::Round($newVolume * 100))%"
+
+    if ($newVolume -lt 0.99) {
+        Write-Warning "Failed to set volume to 100%. Something on your system may be preventing it."
+    } else {
+        Write-Host "Volume successfully set to maximum." -ForegroundColor Green
+    }
 }
 catch {
-    Write-Warning "Could not set system volume using the Core Audio API."
+    Write-Warning "Could not set system volume using the Core Audio API. The required components may be missing or blocked."
 }
 
 
